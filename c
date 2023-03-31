@@ -22,6 +22,7 @@ use Getopt::Std;
 use JSON qw( decode_json );
 use LWP::UserAgent;
 use ReadConf;
+use XML::Simple;
 
 # definitions
 our $opt_b; # look up a single bill
@@ -38,6 +39,8 @@ getopts('b:c:t:v');
 our $verbose = $opt_v;
 our $rlim = 0;
 our $rlim_remain = 0;
+
+our $xml = new XML::Simple;
 
 my $config_file = $opt_c;
 
@@ -137,6 +140,37 @@ sub make_request {
 	return $response;
 }
 
+sub fmt_actions {
+	my ($actions) = @_;
+	foreach my $a (@{ $actions }) {
+		print " ";
+		print $a->{actionDate}." ";
+		if (defined($a->{actionCode})) {
+			print $a->{actionCode}." ";
+		}
+		print $a->{type}." ";
+		print $a->{text}."\n";
+		foreach my $vote (@{$a->{recordedVotes}}) {
+			print " ";
+			print $vote->{date}." ";
+			my $data = get_xml($vote->{url});
+			if (defined($data->{count}->{yeas})) {
+				print " Yeas/Nays = ".$data->{count}->{yeas}."/".$data->{count}->{nays}."\n";
+			} elsif (defined($data->{'vote-metadata'}->{'vote-question'})) {
+				my $vmd = $data->{'vote-metadata'};
+				print " Question: ";
+				print $vmd->{'vote-question'}." ";
+				print " Yeas/Nays/Abstain = ";
+				print $vmd->{'vote-totals'}->{'totals-by-vote'}->{'yea-total'}."/";
+				print $vmd->{'vote-totals'}->{'totals-by-vote'}->{'nay-total'}."/";
+				print $vmd->{'vote-totals'}->{'totals-by-vote'}->{'not-voting-total'}."\n";
+			} else {
+				print Dumper($data)."\n";
+			}
+		}
+	}
+}
+
 # format sponsors
 sub fmt_sponsors {
 	my ($slist) = @_;
@@ -195,7 +229,6 @@ sub fmt_bill {
 		print "Amendments: ${acount}\n";
 		$url = $bill->{amendments}->{url};
 		my $adata = get_info( $url );
-		print Dumper($adata);
 	} else {
 		print "Amendments: 0\n";
 	}
@@ -211,16 +244,37 @@ sub fmt_bill {
 		print "Cosponsors: 0\n";
 	}
 
+	my $actions = $bill->{actions};
+	my $actcount = $actions->{count};
+	if (defined($actcount) && $actcount > 0) {
+		print "Actions: ${actcount}\n";
+		my $adata = get_info( $actions->{url} );
+		fmt_actions( $adata->{actions} );
+	} else {
+		print "Actions: 0\n";
+	}
 	print "\n";
 }
 
-# get bill info
+# get json info
 sub get_info {
 	my ($url) = @_;
 
 	my $response = make_request($url);
 	if ($response->is_success) {
 		my $data = decode_json($response->content);
+		return $data;
+	}
+	return undef;
+}
+
+# get xml info
+sub get_xml {
+	my ($url) = @_;
+
+	my $response = make_request($url);
+	if ($response->is_success) {
+		my $data = $xml->XMLin($response->content);
 		return $data;
 	}
 	return undef;
