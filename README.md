@@ -24,5 +24,5 @@ It can also retrieve info about just one.
 Usage:
 ```
 	perl ./c | less # list of recent bills
-	perl ./c -b 868 -t s # details about Senate bill 868
+	perl ./c -b 686 -t s # details about Senate bill 686
 ```
