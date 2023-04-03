@@ -11,10 +11,8 @@ Requirements:
 ```
 	use Data::Dumper;
 	use Getopt::Std;
-	use JSON qw( decode_json );
-	use LWP::UserAgent;
 	use ReadConf;
-	use XML::Simple;
+	use Gov::Data; # see github.com/toddfries/govapi
 ```
 
 Thusfar, `c` can list recently actioned bills and iterate over bits of them.

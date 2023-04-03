@@ -19,10 +19,8 @@ use warnings;
 
 use Data::Dumper;
 use Getopt::Std;
-use JSON qw( decode_json );
-use LWP::UserAgent;
+use Gov::Data;
 use ReadConf;
-use XML::Simple;
 
 # definitions
 our $opt_b; # look up a single bill
@@ -40,8 +38,6 @@ our $verbose = $opt_v;
 our $rlim = 0;
 our $rlim_remain = 0;
 
-our $xml = new XML::Simple;
-
 my $config_file = $opt_c;
 
 my $r = ReadConf->new();
@@ -55,8 +51,14 @@ if (!defined($maxc)) {
 	$maxc = 0;
 }
 
-our $ua = LWP::UserAgent->new();
-$ua->default_header('X-Api-Key' => $api_key, 'format' => 'json');
+my $info = {
+	'ApiKey' => $api_key,
+	'format' => 'json',
+	'UserAgent' => 'perl c(ongress)/0.1',
+	'verbose' => $verbose,
+};
+
+our $gd = Gov::Data->new($info);
 
 # some defaults to aid in parsing
 our @billtypes = ("H", "HR", "S", "HJRES", "SJRES", "HCONRES", "SCONRES", "HRES", "SRES");
@@ -74,14 +76,26 @@ if (defined($opt_b)) {
 	if (defined($opt_t)) {
 		@tlist = ( uc($opt_t) );
 	}
-	foreach my $ut (@tlist) {
-		my $url = "$base_url/bill/$maxc/${ut}/${opt_b}";
-		my $bdata = get_info( $url );
+	my $found = 0;
+	my $myc = $maxc;
+	while ($myc > 0) {
+	    foreach my $ut (@tlist) {
+		my $url = "$base_url/bill/$myc/${ut}/${opt_b}";
+		my $bdata = $gd->get_info( $url );
 		if (!defined($bdata)) {
 			next;
 		}
+		$found++;
 		fmt_bill( $bdata->{bill} );
 		last;
+	    }
+	    if ($found > 0) {
+		last;
+	    }
+	    print " no bills matching ${opt_b} in congress#${myc}\n";
+	    $myc--;
+	    show_limits();
+	    sleep(1);
 	}
 	exit(0);
 }
@@ -90,54 +104,13 @@ if (defined($opt_b)) {
 # Default request to retrieve a list of bills sorted by date of latest action
 my $url = "$base_url/bill";
 
-my $data = get_info( $url );
+my $data = $gd->get_info( $url );
 
 foreach my $bill ( @{ $data->{bills} } ) {
 
-	my $bdata = get_info( $bill->{url} );
+	my $bdata = $gd->get_info( $bill->{url} );
 	fmt_bill($data->{bill});
 
-}
-
-# Subroutine to make HTTP requests
-sub make_request {
-	my ($url) = @_;
-
-	if ($verbose>0) {
-		print "make_request ..ooOO( $url )OOoo..\n";
-	}
-
-	my $response = $ua->get($url);
-	my $retry = $response->header('retry-after');
-	if (defined($retry)) {
-		print "Retry header found, pausing ${retry}s\n";
-		sleep($retry+1);
-		return make_request($url);
-	}
-
-	my $thisrlim = $response->header('x-ratelimit-limit');
-	my $thisrlim_remain = $response->header('x-ratelimit-remaining');
-	if (defined($thisrlim)) {
-		$rlim = $thisrlim;
-	}
-	if (defined($thisrlim_remain)) {
-		$rlim_remain = $thisrlim_remain;
-	}
-	
-	# Check for errors
-	unless ($response->is_success) {
-		if ($verbose>0) {
-			print STDERR "Request failed: " . $response->status_line . "\n";
-		}
-		return $response;
-	}
-
-	if ($verbose>0) {
-		print Dumper($response);
-		print "\n";
-	}
-
-	return $response;
 }
 
 sub fmt_actions {
@@ -153,7 +126,7 @@ sub fmt_actions {
 		foreach my $vote (@{$a->{recordedVotes}}) {
 			print " ";
 			print $vote->{date}." ";
-			my $data = get_xml($vote->{url});
+			my $data = $gd->get_xml($vote->{url});
 			if (defined($data->{count}->{yeas})) {
 				print " Yeas/Nays = ".$data->{count}->{yeas}."/".$data->{count}->{nays}."\n";
 			} elsif (defined($data->{'vote-metadata'}->{'vote-question'})) {
@@ -228,7 +201,7 @@ sub fmt_bill {
 	if (defined($acount) && $acount > 0) {
 		print "Amendments: ${acount}\n";
 		$url = $bill->{amendments}->{url};
-		my $adata = get_info( $url );
+		my $adata = $gd->get_info( $url );
 	} else {
 		print "Amendments: 0\n";
 	}
@@ -238,7 +211,7 @@ sub fmt_bill {
 	if (defined($cocount) && $cocount > 0) {
 		print "Cosponsors: ${cocount}\n";
 		$url = $cosponsors->{url};
-		my $codata = get_info( $url );
+		my $codata = $gd->get_info( $url );
 		fmt_sponsors( $codata->{cosponsors} );
 	} else {
 		print "Cosponsors: 0\n";
@@ -248,36 +221,12 @@ sub fmt_bill {
 	my $actcount = $actions->{count};
 	if (defined($actcount) && $actcount > 0) {
 		print "Actions: ${actcount}\n";
-		my $adata = get_info( $actions->{url} );
+		my $adata = $gd->get_info( $actions->{url} );
 		fmt_actions( $adata->{actions} );
 	} else {
 		print "Actions: 0\n";
 	}
 	print "\n";
-}
-
-# get json info
-sub get_info {
-	my ($url) = @_;
-
-	my $response = make_request($url);
-	if ($response->is_success) {
-		my $data = decode_json($response->content);
-		return $data;
-	}
-	return undef;
-}
-
-# get xml info
-sub get_xml {
-	my ($url) = @_;
-
-	my $response = make_request($url);
-	if ($response->is_success) {
-		my $data = $xml->XMLin($response->content);
-		return $data;
-	}
-	return undef;
 }
 
 # error check?
@@ -306,4 +255,8 @@ sub update_maxc {
 	}
 	close(N);
 	rename($opt_c.".tmp",$opt_c);
+}
+
+sub show_limits {
+	printf "   %s/%s left\n", $gd->{rlim_remain}, $gd->{rlim};
 }
