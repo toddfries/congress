@@ -262,7 +262,6 @@ sub fmt_bill {
 		$url = $bill->{textVersions}->{url};
 		my $tinfo = $gd->get_json( $url );
 		fmt_text( $tinfo );
-		return;
 	}
 
 
