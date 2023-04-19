@@ -21,18 +21,20 @@ use Data::Dumper;
 use Getopt::Std;
 use Gov::Data;
 use ReadConf;
+use Date::Manip;
 
 # definitions
 our $opt_b; # look up a single bill
 our $opt_c; # config file override
 our $opt_t; # bill type
+our $opt_o; # if set, dir to save various versions of bill
 our $opt_v; # verbose+++
 
 # defaults
 $opt_c = $ENV{HOME}."/.config/govdata/govdata.conf";
 $opt_v = 0;
 
-getopts('b:c:t:v');
+getopts('b:c:o:t:v');
 
 our $verbose = $opt_v;
 our $rlim = 0;
@@ -81,7 +83,7 @@ if (defined($opt_b)) {
 	while ($myc > 0) {
 	    foreach my $ut (@tlist) {
 		my $url = "$base_url/bill/$myc/${ut}/${opt_b}";
-		my $bdata = $gd->get_info( $url );
+		my $bdata = $gd->get_json( $url );
 		if (!defined($bdata)) {
 			next;
 		}
@@ -104,20 +106,26 @@ if (defined($opt_b)) {
 # Default request to retrieve a list of bills sorted by date of latest action
 my $url = "$base_url/bill";
 
-my $data = $gd->get_info( $url );
+my $data = $gd->get_json( $url );
 
 foreach my $bill ( @{ $data->{bills} } ) {
 
-	my $bdata = $gd->get_info( $bill->{url} );
+	my $bdata = $gd->get_json( $bill->{url} );
 	fmt_bill($data->{bill});
 
 }
 
 sub fmt_actions {
 	my ($actions) = @_;
+	my $adate = Date::Manip::Date->new();
 	foreach my $a (@{ $actions }) {
 		print " ";
-		print $a->{actionDate}." ";
+		my $dstr = $a->{actionDate};
+		if (defined($a->{actionTime})) {
+			$dstr .= " ".$a->{actionTime}
+		}
+		$adate->parse($dstr);
+		print $adate->printf("%Y%m%d %H:%M")." ";
 		if (defined($a->{actionCode})) {
 			print $a->{actionCode}." ";
 		}
@@ -162,6 +170,60 @@ sub fmt_sponsors {
 	}
 }
 
+# format amendments
+sub fmt_amendments {
+	my ($adata) = @_;
+	my $udate = Date::Manip::Date->new();
+	my $adate = Date::Manip::Date->new();
+
+	my $i = 0;
+	foreach my $a ( sort { $a->{number} >= $b->{number} } @{ $adata } ) {
+		$udate->parse( $a->{updateDate} );
+		$adate->parse( $a->{latestAction}->{actionDate}."T".
+			$a->{latestAction}->{actionTime} );
+		print " ";
+		print $a->{number}." ";
+		print $a->{type}." ";
+		print $a->{congress}." ";
+		print $udate->printf("%Y%m%d %H:%M")." ";
+		print $adate->printf("%Y%m%d %H:%M")." ";
+		print $a->{description};
+		print "\n";
+		printf "%45s", " ";
+		print $a->{url};
+		print "\n";
+		my $amdata = $gd->get_json( $a->{url} );
+		fmt_amendment_url( $amdata->{amendment} );
+	}
+}
+
+# format amendment urls
+sub fmt_amendment_url {
+	my ($adata) = @_;
+	my $congress = $adata->{congress};
+	my $billtype = $adata->{amendedBill}->{originChamberCode};
+	my $billno   = $adata->{amendedBill}->{number};
+	my $ano      = $adata->{number};
+	my $atype    = lc($adata->{type});
+
+	my $actions = $adata->{actions};
+	my $actcount = $actions->{count};
+	if (defined($actcount) && $actcount > 0) {
+		print "Actions: ${actcount}\n";
+		my $actdata = $gd->get_json( $actions->{url} );
+		fmt_actions( $actdata->{actions} );
+	} else {
+		print "Actions: 0\n";
+	}
+	print "Sponsor: ";
+	fmt_sponsors( $adata->{sponsors} );
+	#print "Text: ";
+	#my $url = "https://api.congress.gov/v3/amendment/${congress}/${atype}/${ano}";
+	#my $atxt = $gd->get_json( $url );
+	#print $atxt."\n";
+	exit(0);
+}
+
 # format bill
 sub fmt_bill {
 	my ($bill) = @_;
@@ -192,6 +254,17 @@ sub fmt_bill {
 	print "Latest Action: ".$bill->{latestAction}->{actionDate}." ";
 	print $bill->{latestAction}->{text}."\n";
 
+	if (defined($opt_o) && -d ${opt_o}) {
+		my $congress = $bill->{congress};
+		my $oc = lc($bill->{originChamberCode});
+		my $bno = $bill->{number};
+		my $url = "https://api.congress.gov/v3/bill/${congress}/${oc}/${bno}/text";
+		$url = $bill->{textVersions}->{url};
+		my $tinfo = $gd->get_json( $url );
+		fmt_text( $tinfo );
+		return;
+	}
+
 
 	print "Sponsor: ";
 	fmt_sponsors( $bill->{sponsors} );
@@ -201,7 +274,8 @@ sub fmt_bill {
 	if (defined($acount) && $acount > 0) {
 		print "Amendments: ${acount}\n";
 		$url = $bill->{amendments}->{url};
-		my $adata = $gd->get_info( $url );
+		my $adata = $gd->get_json( $url );
+		fmt_amendments( $adata->{amendments} );
 	} else {
 		print "Amendments: 0\n";
 	}
@@ -211,7 +285,7 @@ sub fmt_bill {
 	if (defined($cocount) && $cocount > 0) {
 		print "Cosponsors: ${cocount}\n";
 		$url = $cosponsors->{url};
-		my $codata = $gd->get_info( $url );
+		my $codata = $gd->get_json( $url );
 		fmt_sponsors( $codata->{cosponsors} );
 	} else {
 		print "Cosponsors: 0\n";
@@ -221,12 +295,58 @@ sub fmt_bill {
 	my $actcount = $actions->{count};
 	if (defined($actcount) && $actcount > 0) {
 		print "Actions: ${actcount}\n";
-		my $adata = $gd->get_info( $actions->{url} );
+		$verbose++;
+		my $adata = $gd->get_json( $actions->{url} );
+		$verbose--;
 		fmt_actions( $adata->{actions} );
 	} else {
 		print "Actions: 0\n";
 	}
 	print "\n";
+}
+
+sub fmt_text {
+	my ($t) = @_;
+	#print "fmt_text debug: ".Dumper($t);
+	my $congress = $t->{request}->{congress};
+	my $bno = $t->{request}->{billNumber};
+	my $bt = $t->{request}->{billType};
+
+	foreach my $f ( @{$t->{textVersions}} ) {
+		if (!defined($f->{type})) {
+			next;
+		}
+		printf "text: congress %s bill %s type %s ttype %s\n\n",
+			$congress,
+			$bno,
+			$bt,
+			$f->{type};
+		foreach my $format (@{$f->{formats}}) {
+			my $ext;
+			print "fmt_text: debug format->type = ".
+				$format->{type}."\n";
+			print "fmt_text: debug format->url = ".
+				$format->{url}."\n";
+			if ($format->{type} eq "Formatted Text") {
+				$ext = "txt";
+			} elsif ($format->{type} eq "PDF") {
+				$ext = "pdf";
+			} elsif ($format->{type} eq "Formatted XML") {
+				$ext = "xml";
+			} else {
+				print "fmt_text unhandled type: ";
+				print $f->{type}."\n";
+				next;
+			}
+			my $data = $gd->get_info( $format->{url} );
+			my $name = sprintf "%s/%s-%s-%s-%s.%s",
+				$opt_o, $congress, $bno, $bt, $f->{type}, $ext;
+			$name =~ s/\s/_/g;
+			open(T, ">", $name);
+			print T $data;
+			close(T);
+		}
+	}
 }
 
 # error check?
@@ -258,5 +378,5 @@ sub update_maxc {
 }
 
 sub show_limits {
-	printf "   %s/%s left\n", $gd->{rlim_remain}, $gd->{rlim};
+	printf "   %s/%s left\n", $rlim_remain, $rlim;
 }
