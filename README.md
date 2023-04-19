@@ -22,5 +22,7 @@ It can also retrieve info about just one.
 Usage:
 ```
 	perl ./c | less # list of recent bills
-	perl ./c -b 686 -t s # details about Senate bill 686
+	mkdir -p s686
+	# details about Senate bill 686, save documents in 's686' dir
+	perl ./c -b 686 -t s -o s686
 ```
